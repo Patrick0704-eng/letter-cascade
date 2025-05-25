@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Letter Cascade</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; background: #1a1a1a; color: #fff; }
+    #container { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    #game { display: grid; grid-template-columns: repeat(5, 60px); grid-gap: 6px; margin: 20px auto; justify-content: center; }
+    .cell { width: 60px; height: 60px; background: #333; display: flex; align-items: center; justify-content: center; font-size: 28px; border-radius: 8px; cursor: pointer; user-select: none; transition: background 0.3s ease; border: 1px solid #444; }
+    .cell.selected { background: #fff; color: #000; }
+    .cell.flash-green { background: #00e676 !important; color: #000 !important; }
+    .cell.flash-red { background: #ff1744 !important; color: #000 !important; }
+    #controls { margin-top: 20px; }
+    button { padding: 10px 20px; font-size: 16px; margin: 5px; }
+    #difficultyModal { background: #222; border: 2px solid #555; padding: 20px; position: absolute; top: 30%; left: 50%; transform: translate(-50%, -50%); display: none; border-radius: 10px; z-index: 10; }
+    #description { max-width: 600px; margin: 20px auto; font-size: 16px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <div id="difficultyModal">
+    <h2>Select Difficulty</h2>
+    <select id="difficulty">
+      <option value="easy">Easy</option>
+      <option value="medium" selected>Medium</option>
+      <option value="hard">Hard</option>
+    </select>
+    <br><br>
+    <button id="startButton">Start Game</button>
+    <button id="cancelButton">Cancel</button>
+  </div>
+
+  <div id="container" style="filter: blur(3px); pointer-events: none;">
+    <h1>Letter Cascade</h1>
+    <div id="description">
+      <p>Click adjacent letters to make words. Words must be 3 or more letters long. Longer words give more points. Stop the letters from reaching the top.</p>
+    </div>
+    <div id="game"></div>
+    <div id="controls">
+      <button id="submit" disabled>Submit Word</button>
+      <button id="restart">Restart Game</button>
+      <button id="pause">Pause</button>
+      <p>Word: <span id="currentWord"></span></p>
+      <p>Score: <span id="score">0</span></p>
+      <p>High Score (<span id="difficultyLabel">Medium</span>): <span id="highScore">0</span></p>
+
+      <p id="gameOver" style="color:red; font-weight:bold; display:none;">Game Over!</p>
+    </div>
+  </div>
+
+  <script>
+    const width = 5;
+    const height = 10;
+    const game = document.getElementById('game');
+    const currentWordSpan = document.getElementById('currentWord');
+    const scoreSpan = document.getElementById('score');
+    const highScoreSpan = document.getElementById('highScore');
+    const gameOverMessage = document.getElementById('gameOver');
+    const submitButton = document.getElementById('submit');
+    const restartButton = document.getElementById('restart');
+    const pauseButton = document.getElementById('pause');
+    const difficultySelect = document.getElementById('difficulty');
+    const difficultyModal = document.getElementById('difficultyModal');
+    const container = document.getElementById('container');
+restartButton.addEventListener('click', () => {
+      if (!gameOver) {
+        paused = true;
+        pauseButton.textContent = 'Unpause';
+      }
+      difficultyModal.style.display = 'block';
+      container.style.filter = 'blur(3px)';
+      container.style.pointerEvents = 'none';
+    });
+
+    document.getElementById('cancelButton').addEventListener('click', () => {
+  difficultyModal.style.display = 'none';
+  container.style.filter = '';
+  container.style.pointerEvents = '';
+  if (!gameOver) {
+    paused = false;
+    pauseButton.textContent = 'Pause';
+
+    // Resume paused fallers
+    const toResume = [...pausedFallers];
+    pausedFallers = [];
+    for (const f of toResume) {
+      setTimeout(() => {
+        if (!paused && !gameOver) f();
+      }, dropSpeed);
+    }
+  }
+});
+
+    let dictionary = new Set();
+    let dictionaryReady = false;
+    let cells = [];
+    let selectedCells = [];
+    let score = 0;
+    let dropTimer = null;
+    let dropSpeed = 50;
+    let spawnFrequency = 1000;
+    let gameOver = false;
+    let paused = false;
+    let pausedFallers = [];
+    let activeFallers = new Set();
+    let currentDifficulty = 'medium'; // default
+
+    let highScore = localStorage.getItem('lettercascadeHighScore') || 0;
+    highScoreSpan.textContent = highScore;
+
+    fetch('https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt')
+      .then(res => res.text())
+      .then(text => {
+        dictionary = new Set(text.split('\n').map(w => w.trim().toUpperCase()));
+        dictionaryReady = true;
+      });
+
+    const commonLetters = 'ETAOINSHRDLCUMWFGYPBVKJXQZ'.split('');
+
+    function getWeightedRandomLetter() {
+      const index = Math.floor(Math.pow(Math.random(), 1.75) * commonLetters.length);
+      return commonLetters[index];
+    }
+
+    function createGrid() {
+      game.innerHTML = '';
+      cells = [];
+      for (let i = 0; i < width * height; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        game.appendChild(cell);
+        cells.push(cell);
+      }
+    }
+
+    function clearSelection() {
+      selectedCells.forEach(cell => cell.classList.remove('selected'));
+      selectedCells = [];
+      currentWordSpan.textContent = '';
+    }
+
+    function updateCurrentWord() {
+      const word = selectedCells.map(cell => cell.textContent).join('');
+      currentWordSpan.textContent = word;
+    }
+
+    function isAdjacent(cell1, cell2) {
+      const index1 = cells.indexOf(cell1);
+      const index2 = cells.indexOf(cell2);
+      const row1 = Math.floor(index1 / width);
+      const col1 = index1 % width;
+      const row2 = Math.floor(index2 / width);
+      const col2 = index2 % width;
+      return Math.abs(row1 - row2) <= 1 && Math.abs(col1 - col2) <= 1;
+    }
+
+    game.addEventListener('click', (e) => {
+      if (gameOver || paused) return;
+      const target = e.target;
+      if (!target.classList.contains('cell')) return;
+      if (!target.textContent || selectedCells.includes(target)) return;
+
+      if (selectedCells.length === 0 || isAdjacent(selectedCells[selectedCells.length - 1], target)) {
+        selectedCells.push(target);
+        target.classList.add('selected');
+        updateCurrentWord();
+      }
+    });
+
+    function collapseColumn(col) {
+      for (let row = height - 1; row >= 0; row--) {
+        let index = row * width + col;
+        if (!cells[index].textContent) {
+          for (let above = row - 1; above >= 0; above--) {
+            let aboveIndex = above * width + col;
+            if (cells[aboveIndex].textContent) {
+              cells[index].textContent = cells[aboveIndex].textContent;
+              cells[aboveIndex].textContent = '';
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    function checkTopRowGameOver() {
+      for (let col = 0; col < width; col++) {
+        const cell = cells[col];
+        if (cell.textContent && !Array.from(activeFallers).some(id => cell.dataset.fallerId === id.toString())) {
+          gameOver = true;
+          gameOverMessage.style.display = 'block';
+          submitButton.disabled = true;
+          clearSelection();
+          if (dropTimer) clearInterval(dropTimer);
+          if (score > highScore) {
+  highScore = score;
+  localStorage.setItem(`lettercascadeHighScore_${currentDifficulty}`, highScore);
+  highScoreSpan.textContent = highScore;
+}
+
+          break;
+        }
+      }
+    }
+
+    submitButton.addEventListener('click', () => {
+      if (gameOver || !dictionaryReady || selectedCells.length === 0) return;
+      const word = selectedCells.map(cell => cell.textContent).join('').toUpperCase();
+
+      if (selectedCells.length < 3 || !dictionary.has(word)) {
+        selectedCells.forEach(cell => {
+          cell.classList.add('flash-red');
+          setTimeout(() => cell.classList.remove('flash-red'), 300);
+        });
+      } else {
+        score += Math.pow(word.length, 2);
+        scoreSpan.textContent = score;
+
+	if (score > highScore) {
+  highScore = score;
+  localStorage.setItem(`lettercascadeHighScore_${currentDifficulty}`, highScore);
+  highScoreSpan.textContent = highScore;
+}
+
+
+        const affectedCols = new Set();
+
+        selectedCells.forEach(cell => {
+          const index = cells.indexOf(cell);
+          const col = index % width;
+          affectedCols.add(col);
+          cell.classList.add('flash-green');
+          setTimeout(() => {
+            cell.classList.remove('flash-green');
+            cell.textContent = '';
+          }, 300);
+        });
+
+        setTimeout(() => {
+          affectedCols.forEach(col => collapseColumn(col));
+          checkTopRowGameOver();
+        }, 310);
+      }
+      clearSelection();
+    });
+
+    pauseButton.addEventListener('click', () => {
+      if (gameOver) return;
+      paused = !paused;
+      pauseButton.textContent = paused ? 'Unpause' : 'Pause';
+      if (!paused) {
+        const toResume = [...pausedFallers];
+        pausedFallers = [];
+        for (const f of toResume) {
+          setTimeout(() => {
+            if (!paused && !gameOver) f();
+          }, dropSpeed);
+        }
+      }
+    });
+
+    function spawnLetter() {
+      if (gameOver || paused) return;
+      const letter = getWeightedRandomLetter();
+
+      const columnScores = Array(width).fill(0);
+      for (let col = 0; col < width; col++) {
+        for (let row = 0; row < height; row++) {
+          if (!cells[row * width + col].textContent) {
+            columnScores[col]++;
+          }
+        }
+      }
+
+      let bestCols = [];
+      let maxScore = Math.max(...columnScores);
+      for (let col = 0; col < width; col++) {
+        if (columnScores[col] === maxScore && !cells[col].textContent) {
+          bestCols.push(col);
+        }
+      }
+
+      let col;
+      if (Math.random() < 0.2 && bestCols.length > 0) {
+        col = bestCols[Math.floor(Math.random() * bestCols.length)];
+      } else {
+        col = Math.floor(Math.random() * width);
+      }
+
+      let row = 0;
+      const id = Symbol();
+      activeFallers.add(id);
+
+      function fall() {
+        if (paused) {
+          pausedFallers.push(fall);
+          return;
+        }
+
+        if (!activeFallers.has(id)) return;
+
+        if (row >= height || cells[row * width + col].textContent !== '') {
+          if (row > 0) {
+            cells[(row - 1) * width + col].textContent = letter;
+            cells[(row - 1) * width + col].dataset.fallerId = id.toString();
+          }
+          activeFallers.delete(id);
+          checkTopRowGameOver();
+          return;
+        }
+
+        if (row > 0) {
+          const prevCell = cells[(row - 1) * width + col];
+          prevCell.textContent = '';
+          delete prevCell.dataset.fallerId;
+        }
+        const cell = cells[row * width + col];
+        cell.textContent = letter;
+        cell.dataset.fallerId = id.toString();
+        row++;
+        setTimeout(fall, dropSpeed);
+      }
+
+      fall();
+    }
+
+
+    function startGame() {
+      clearSelection();
+      createGrid();
+      gameOver = false;
+      gameOverMessage.style.display = 'none';
+      score = 0;
+      paused = false;
+      activeFallers.clear();
+      pausedFallers = [];
+      submitButton.disabled = false;
+      scoreSpan.textContent = '0';
+      if (dropTimer) clearInterval(dropTimer);
+      dropTimer = setInterval(spawnLetter, spawnFrequency);
+    }
+
+    restartButton.addEventListener('click', () => {
+      container.style.filter = 'blur(3px)';
+      container.style.pointerEvents = 'none';
+      difficultyModal.style.display = 'block';
+    });
+
+    startButton.addEventListener('click', () => {
+  currentDifficulty = difficultySelect.value;
+
+  if (currentDifficulty === 'easy') {
+    spawnFrequency = 1500;
+    dropSpeed = 100;
+  } else if (currentDifficulty === 'medium') {
+    spawnFrequency = 1000;
+    dropSpeed = 75;
+  } else {
+    spawnFrequency = 700;
+    dropSpeed = 50;
+  }
+
+  // Load high score for selected difficulty
+  highScore = localStorage.getItem(`lettercascadeHighScore_${currentDifficulty}`) || 0;
+  highScoreSpan.textContent = highScore;
+
+  // Update difficulty label
+  document.getElementById('difficultyLabel').textContent =
+    currentDifficulty.charAt(0).toUpperCase() + currentDifficulty.slice(1);
+
+  difficultyModal.style.display = 'none';
+  container.style.filter = '';
+  container.style.pointerEvents = '';
+  startGame();
+});
+
+
+
+    // Only show difficulty modal on load — no fallers or loop yet
+    window.addEventListener('load', () => {
+      difficultyModal.style.display = 'block';
+      container.style.filter = 'blur(3px)';
+      container.style.pointerEvents = 'none';
+    });
+  </script>
+</body>
+</html>
